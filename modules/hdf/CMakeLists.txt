@@ -1,6 +1,6 @@
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR})
 
-find_package(HDF5)
+find_package(HDF5 NO_MODULE)
 if(HDF5_FOUND)
     set(HAVE_HDF5 1)
     message(STATUS "HDF5:   YES")
