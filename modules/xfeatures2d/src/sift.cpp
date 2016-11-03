@@ -625,7 +625,95 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
     cv::hal::magnitude32f(X, Y, Mag, len);
     cv::hal::exp32f(W, W, len);
 
-    for( k = 0; k < len; k++ )
+    k = 0;
+#if CV_AVX2
+    int CV_DECL_ALIGNED(32) idx_buf[8];
+    float CV_DECL_ALIGNED(32) val_buf[8];
+    __m256 __ori = _mm256_set1_ps(ori);
+    __m256 __bins_per_rad = _mm256_set1_ps(bins_per_rad);
+    __m256i __n = _mm256_set1_epi32(n);
+    for( ; k <= len - 8; k+=8 )
+    {
+        __m256 __rbin = _mm256_loadu_ps(&RBin[k]);
+        __m256 __cbin = _mm256_loadu_ps(&CBin[k]);
+        __m256 __obin = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(&Ori[k]), __ori), __bins_per_rad);
+        __m256 __mag = _mm256_mul_ps(_mm256_loadu_ps(&Mag[k]), _mm256_loadu_ps(&W[k]));
+
+        __m256 __r0 = _mm256_floor_ps(__rbin);
+        __rbin = _mm256_sub_ps(__rbin, __r0);
+        __m256 __c0 = _mm256_floor_ps(__cbin);
+        __cbin = _mm256_sub_ps(__cbin, __c0);
+        __m256 __o0 = _mm256_floor_ps(__obin);
+        __obin = _mm256_sub_ps(__obin, __o0);
+
+        __m256i __o0i = _mm256_cvtps_epi32(__o0);
+        // _o0 += (o0 < 0) * n
+        __o0i = _mm256_add_epi32(__o0i, _mm256_and_si256(
+            __n,
+            _mm256_cmpgt_epi32(_mm256_setzero_si256(), __o0i)));
+        __o0i = _mm256_sub_epi32(__o0i, _mm256_and_si256(
+            __n, 
+            _mm256_or_si256(
+                _mm256_cmpeq_epi32(__o0i, __n),
+                _mm256_cmpgt_epi32(__o0i, __n))));
+
+        __m256 __v_r1 = _mm256_mul_ps(__mag, __rbin);
+        __m256 __v_r0 = _mm256_sub_ps(__mag, __v_r1);
+
+        __m256 __v_rc11 = _mm256_mul_ps(__v_r1, __cbin);
+        __m256 __v_rc10 = _mm256_sub_ps(__v_r1, __v_rc11);
+
+        __m256 __v_rc01 = _mm256_mul_ps(__v_r0, __cbin);
+        __m256 __v_rc00 = _mm256_sub_ps(__v_r0, __v_rc01);
+
+        __m256 __v_rco111 = _mm256_mul_ps(__v_rc11, __obin);
+        __m256 __v_rco110 = _mm256_sub_ps(__v_rc11, __v_rco111);
+
+        __m256 __v_rco101 = _mm256_mul_ps(__v_rc10, __obin);
+        __m256 __v_rco100 = _mm256_sub_ps(__v_rc10, __v_rco101);
+
+        __m256 __v_rco011 = _mm256_mul_ps(__v_rc01, __obin);
+        __m256 __v_rco010 = _mm256_sub_ps(__v_rc01, __v_rco011);
+
+        __m256 __v_rco001 = _mm256_mul_ps(__v_rc00, __obin);
+        __m256 __v_rco000 = _mm256_sub_ps(__v_rc00, __v_rco001);
+
+        __m256i __one = _mm256_set1_epi32(1);
+        __m256i __idx = 
+            _mm256_add_epi32(
+                _mm256_mul_epi32(
+                    _mm256_add_epi32(
+                        _mm256_mul_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(__r0), __one), _mm256_set1_epi32(d + 2)),
+                        _mm256_add_epi32(_mm256_cvtps_epi32(__c0), __one)),
+                     _mm256_set1_epi32(n + 2)),
+                __o0i);
+
+        _mm256_store_si256((__m256i *)idx_buf, __idx);
+
+        #define SUM_HELPER(offset, __v)                \
+            _mm256_store_ps(val_buf, __v);             \
+            hist[idx_buf[0] + (offset)] += val_buf[0]; \
+            hist[idx_buf[1] + (offset)] += val_buf[1]; \
+            hist[idx_buf[2] + (offset)] += val_buf[2]; \
+            hist[idx_buf[3] + (offset)] += val_buf[3]; \
+            hist[idx_buf[4] + (offset)] += val_buf[4]; \
+            hist[idx_buf[5] + (offset)] += val_buf[5]; \
+            hist[idx_buf[6] + (offset)] += val_buf[6]; \
+            hist[idx_buf[7] + (offset)] += val_buf[7]; \
+        
+        SUM_HELPER(0, __v_rco000);
+        SUM_HELPER(1, __v_rco001);
+        SUM_HELPER(n+2, __v_rco010);
+        SUM_HELPER(n+3, __v_rco011);
+        SUM_HELPER((d+2)*(n+2), __v_rco100);
+        SUM_HELPER((d+2)*(n+2)+1, __v_rco101);
+        SUM_HELPER((d+3)*(n+2), __v_rco110);
+        SUM_HELPER((d+3)*(n+2)+1, __v_rco111);
+
+        #undef SUM_HELPER
+    }
+#endif
+    for( ; k < len; k++ )
     {
         float rbin = RBin[k], cbin = CBin[k];
         float obin = (Ori[k] - ori)*bins_per_rad;
@@ -757,6 +845,7 @@ int SIFT_Impl::defaultNorm() const
     return NORM_L2;
 }
 
+#include <ctime>
 
 void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
                       std::vector<KeyPoint>& keypoints,
@@ -832,7 +921,7 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
         // filter keypoints by mask
         //KeyPointsFilter::runByPixelsMask( keypoints, mask );
     }
-
+    clock_t begin = clock();
     if( _descriptors.needed() )
     {
         //t = (double)getTickCount();
@@ -844,6 +933,7 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
         //t = (double)getTickCount() - t;
         //printf("descriptor extraction time: %g\n", t*1000./tf);
     }
+    printf("calcDesc %f\n", double(clock() - begin) / CLOCKS_PER_SEC);
 }
 
 }
