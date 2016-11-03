@@ -590,12 +590,7 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
     float *X = buf, *Y = X + len, *Mag = Y, *Ori = Mag + len, *W = Ori + len;
     float *RBin = W + len, *CBin = RBin + len, *hist = CBin + len;
 
-    for( i = 0; i < d+2; i++ )
-    {
-        for( j = 0; j < d+2; j++ )
-            for( k = 0; k < n+2; k++ )
-                hist[(i*(d+2) + j)*(n+2) + k] = 0.;
-    }
+    std::memset(hist, 0, histlen * sizeof(float));
 
     for( i = -radius, k = 0; i <= radius; i++ )
         for( j = -radius; j <= radius; j++ )
@@ -681,11 +676,11 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         __m256i __one = _mm256_set1_epi32(1);
         __m256i __idx = 
             _mm256_add_epi32(
-                _mm256_mul_epi32(
+                _mm256_mullo_epi32(
                     _mm256_add_epi32(
-                        _mm256_mul_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(__r0), __one), _mm256_set1_epi32(d + 2)),
+                        _mm256_mullo_epi32(_mm256_add_epi32(_mm256_cvtps_epi32(__r0), __one), _mm256_set1_epi32(d + 2)),
                         _mm256_add_epi32(_mm256_cvtps_epi32(__c0), __one)),
-                     _mm256_set1_epi32(n + 2)),
+                    _mm256_set1_epi32(n + 2)),
                 __o0i);
 
         _mm256_store_si256((__m256i *)idx_buf, __idx);
@@ -711,6 +706,79 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         SUM_HELPER((d+3)*(n+2)+1, __v_rco111);
 
         #undef SUM_HELPER
+        /*
+        hist[idx_buf[0]] +=               __v_rco000[0];
+        hist[idx_buf[0]+1] +=             __v_rco001[0];
+        hist[idx_buf[0]+(n+2)] +=         __v_rco010[0];
+        hist[idx_buf[0]+(n+3)] +=         __v_rco011[0];
+        hist[idx_buf[0]+(d+2)*(n+2)]   += __v_rco100[0];
+        hist[idx_buf[0]+(d+2)*(n+2)+1] += __v_rco101[0];
+        hist[idx_buf[0]+(d+3)*(n+2)] +=   __v_rco110[0];
+        hist[idx_buf[0]+(d+3)*(n+2)+1] += __v_rco111[0];
+
+        hist[idx_buf[1]] +=               __v_rco000[1];
+        hist[idx_buf[1]+1] +=             __v_rco001[1];
+        hist[idx_buf[1]+(n+2)] +=         __v_rco010[1];
+        hist[idx_buf[1]+(n+3)] +=         __v_rco011[1];
+        hist[idx_buf[1]+(d+2)*(n+2)]   += __v_rco100[1];
+        hist[idx_buf[1]+(d+2)*(n+2)+1] += __v_rco101[1];
+        hist[idx_buf[1]+(d+3)*(n+2)] +=   __v_rco110[1];
+        hist[idx_buf[1]+(d+3)*(n+2)+1] += __v_rco111[1];
+
+        hist[idx_buf[2]] +=               __v_rco000[2];
+        hist[idx_buf[2]+1] +=             __v_rco001[2];
+        hist[idx_buf[2]+(n+2)] +=         __v_rco010[2];
+        hist[idx_buf[2]+(n+3)] +=         __v_rco011[2];
+        hist[idx_buf[2]+(d+2)*(n+2)]   += __v_rco100[2];
+        hist[idx_buf[2]+(d+2)*(n+2)+1] += __v_rco101[2];
+        hist[idx_buf[2]+(d+3)*(n+2)] +=   __v_rco110[2];
+        hist[idx_buf[2]+(d+3)*(n+2)+1] += __v_rco111[2];
+
+        hist[idx_buf[3]] +=               __v_rco000[3];
+        hist[idx_buf[3]+1] +=             __v_rco001[3];
+        hist[idx_buf[3]+(n+2)] +=         __v_rco010[3];
+        hist[idx_buf[3]+(n+3)] +=         __v_rco011[3];
+        hist[idx_buf[3]+(d+2)*(n+2)]   += __v_rco100[3];
+        hist[idx_buf[3]+(d+2)*(n+2)+1] += __v_rco101[3];
+        hist[idx_buf[3]+(d+3)*(n+2)] +=   __v_rco110[3];
+        hist[idx_buf[3]+(d+3)*(n+2)+1] += __v_rco111[3];
+
+        hist[idx_buf[4]] +=               __v_rco000[4];
+        hist[idx_buf[4]+1] +=             __v_rco001[4];
+        hist[idx_buf[4]+(n+2)] +=         __v_rco010[4];
+        hist[idx_buf[4]+(n+3)] +=         __v_rco011[4];
+        hist[idx_buf[4]+(d+2)*(n+2)]   += __v_rco100[4];
+        hist[idx_buf[4]+(d+2)*(n+2)+1] += __v_rco101[4];
+        hist[idx_buf[4]+(d+3)*(n+2)] +=   __v_rco110[4];
+        hist[idx_buf[4]+(d+3)*(n+2)+1] += __v_rco111[4];
+
+        hist[idx_buf[5]] +=               __v_rco000[5];
+        hist[idx_buf[5]+1] +=             __v_rco001[5];
+        hist[idx_buf[5]+(n+2)] +=         __v_rco010[5];
+        hist[idx_buf[5]+(n+3)] +=         __v_rco011[5];
+        hist[idx_buf[5]+(d+2)*(n+2)]   += __v_rco100[5];
+        hist[idx_buf[5]+(d+2)*(n+2)+1] += __v_rco101[5];
+        hist[idx_buf[5]+(d+3)*(n+2)] +=   __v_rco110[5];
+        hist[idx_buf[5]+(d+3)*(n+2)+1] += __v_rco111[5];
+
+        hist[idx_buf[6]] +=               __v_rco000[6];
+        hist[idx_buf[6]+1] +=             __v_rco001[6];
+        hist[idx_buf[6]+(n+2)] +=         __v_rco010[6];
+        hist[idx_buf[6]+(n+3)] +=         __v_rco011[6];
+        hist[idx_buf[6]+(d+2)*(n+2)]   += __v_rco100[6];
+        hist[idx_buf[6]+(d+2)*(n+2)+1] += __v_rco101[6];
+        hist[idx_buf[6]+(d+3)*(n+2)] +=   __v_rco110[6];
+        hist[idx_buf[6]+(d+3)*(n+2)+1] += __v_rco111[6];
+
+        hist[idx_buf[7]] +=               __v_rco000[7];
+        hist[idx_buf[7]+1] +=             __v_rco001[7];
+        hist[idx_buf[7]+(n+2)] +=         __v_rco010[7];
+        hist[idx_buf[7]+(n+3)] +=         __v_rco011[7];
+        hist[idx_buf[7]+(d+2)*(n+2)]   += __v_rco100[7];
+        hist[idx_buf[7]+(d+2)*(n+2)+1] += __v_rco101[7];
+        hist[idx_buf[7]+(d+3)*(n+2)] +=   __v_rco110[7];
+        hist[idx_buf[7]+(d+3)*(n+2)+1] += __v_rco111[7];*/
+
     }
 #endif
     for( ; k < len; k++ )
