@@ -349,7 +349,7 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     float CV_DECL_ALIGNED(32) w_mul_mag_buf[8];
     for ( ; k <= len - 8; k+=8 )
     {
-        __m256i __bin = _mm256_cvtps_epi32(_mm256_floor_ps(_mm256_mul_ps(__nd360, _mm256_loadu_ps(&Ori[k]))));
+        __m256i __bin = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(__nd360, _mm256_loadu_ps(&Ori[k])), _MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC));
 
         __bin = _mm256_sub_epi32(__bin, _mm256_and_si256(
             __n,
@@ -373,7 +373,6 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
         temphist[bin_buf[5]] += w_mul_mag_buf[5];
         temphist[bin_buf[6]] += w_mul_mag_buf[6];
         temphist[bin_buf[7]] += w_mul_mag_buf[7];
-
     }
 #endif
     for( ; k < len; k++ )
