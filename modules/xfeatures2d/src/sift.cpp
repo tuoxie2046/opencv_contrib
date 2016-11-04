@@ -313,8 +313,7 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     float *X = buf, *Y = X + len, *Mag = X, *Ori = Y + len, *W = Ori + len;
     float* temphist = W + len + 2;
 
-    for( i = 0; i < n; i++ )
-        temphist[i] = 0.f;
+    std::memset(temphist, 0, n * sizeof(float));
 
     for( i = -radius, k = 0; i <= radius; i++ )
     {
@@ -342,7 +341,42 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     cv::hal::fastAtan2(Y, X, Ori, len, true);
     cv::hal::magnitude32f(X, Y, Mag, len);
 
-    for( k = 0; k < len; k++ )
+    k = 0;
+#if CV_AVX2
+    __m256 __nd360 = _mm256_set1_ps(n/360.f);
+    __m256i __n = _mm256_set1_epi32(n);
+    int CV_DECL_ALIGNED(32) bin_buf[8];
+    float CV_DECL_ALIGNED(32) w_mul_mag_buf[8];
+    for ( ; k <= len - 8; k+=8 )
+    {
+        __m256i __bin = _mm256_cvtps_epi32(_mm256_floor_ps(_mm256_mul_ps(__nd360, _mm256_loadu_ps(&Ori[k]))));
+
+        __bin = _mm256_sub_epi32(__bin, _mm256_and_si256(
+            __n,
+            _mm256_or_si256(
+                _mm256_cmpeq_epi32(__bin, __n),
+                _mm256_cmpgt_epi32(__bin, __n))));
+        __bin = _mm256_add_epi32(__bin, _mm256_and_si256(
+            __n,
+            _mm256_cmpgt_epi32(_mm256_setzero_si256(), __bin)));
+
+        __m256 __w_mul_mag = _mm256_mul_ps(_mm256_loadu_ps(&W[k]), _mm256_loadu_ps(&Mag[k]));
+
+        _mm256_store_si256((__m256i *) bin_buf, __bin);
+        _mm256_store_ps(w_mul_mag_buf, __w_mul_mag);
+
+        temphist[bin_buf[0]] += w_mul_mag_buf[0];
+        temphist[bin_buf[1]] += w_mul_mag_buf[1];
+        temphist[bin_buf[2]] += w_mul_mag_buf[2];
+        temphist[bin_buf[3]] += w_mul_mag_buf[3];
+        temphist[bin_buf[4]] += w_mul_mag_buf[4];
+        temphist[bin_buf[5]] += w_mul_mag_buf[5];
+        temphist[bin_buf[6]] += w_mul_mag_buf[6];
+        temphist[bin_buf[7]] += w_mul_mag_buf[7];
+
+    }
+#endif
+    for( ; k < len; k++ )
     {
         int bin = cvRound((n/360.f)*Ori[k]);
         if( bin >= n )
@@ -357,7 +391,34 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     temphist[-2] = temphist[n-2];
     temphist[n] = temphist[0];
     temphist[n+1] = temphist[1];
-    for( i = 0; i < n; i++ )
+
+    i = 0;
+#if CV_AVX2
+    __m256 __d_1_16 = _mm256_set1_ps(1.f/16.f);
+    __m256 __d_4_16 = _mm256_set1_ps(4.f/16.f);
+    __m256 __d_6_16 = _mm256_set1_ps(6.f/16.f);
+    for( ; i <= n - 8; i+=8 )
+    {
+        __m256 __hist =
+            _mm256_add_ps(
+                _mm256_mul_ps(
+                    _mm256_add_ps(
+                        _mm256_loadu_ps(&temphist[i-2]),
+                        _mm256_loadu_ps(&temphist[i+2])),
+                    __d_1_16),
+                _mm256_add_ps(
+                    _mm256_mul_ps(
+                        _mm256_add_ps(
+                            _mm256_loadu_ps(&temphist[i-1]),
+                            _mm256_loadu_ps(&temphist[i+1])),
+                        __d_4_16),
+                    _mm256_mul_ps(
+                        _mm256_loadu_ps(&temphist[i]),
+                        __d_6_16)));
+        _mm256_storeu_ps(&hist[i], __hist);
+    }
+#endif
+    for( ; i < n; i++ )
     {
         hist[i] = (temphist[i-2] + temphist[i+2])*(1.f/16.f) +
             (temphist[i-1] + temphist[i+1])*(4.f/16.f) +
@@ -685,6 +746,7 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
 
         _mm256_store_si256((__m256i *)idx_buf, __idx);
 
+#if 0
         #define SUM_HELPER(offset, __v)                \
             _mm256_store_ps(val_buf, __v);             \
             hist[idx_buf[0] + (offset)] += val_buf[0]; \
@@ -706,7 +768,7 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         SUM_HELPER((d+3)*(n+2)+1, __v_rco111);
 
         #undef SUM_HELPER
-        /*
+#else
         hist[idx_buf[0]] +=               __v_rco000[0];
         hist[idx_buf[0]+1] +=             __v_rco001[0];
         hist[idx_buf[0]+(n+2)] +=         __v_rco010[0];
@@ -777,7 +839,8 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         hist[idx_buf[7]+(d+2)*(n+2)]   += __v_rco100[7];
         hist[idx_buf[7]+(d+2)*(n+2)+1] += __v_rco101[7];
         hist[idx_buf[7]+(d+3)*(n+2)] +=   __v_rco110[7];
-        hist[idx_buf[7]+(d+3)*(n+2)+1] += __v_rco111[7];*/
+        hist[idx_buf[7]+(d+3)*(n+2)+1] += __v_rco111[7];
+#endif
 
     }
 #endif
@@ -826,8 +889,10 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
             int idx = ((i+1)*(d+2) + (j+1))*(n+2);
             hist[idx] += hist[idx+n];
             hist[idx+1] += hist[idx+n+1];
-            for( k = 0; k < n; k++ )
-                dst[(i*d + j)*n + k] = hist[idx+k];
+
+            std::memcpy(&dst[(i*d + j)*n], &hist[idx], n * sizeof(float));
+            //for( k = 0; k < n; k++ )
+            //    dst[(i*d + j)*n + k] = hist[idx+k];
         }
     // copy histogram to the descriptor,
     // apply hysteresis thresholding
@@ -835,22 +900,65 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
     // to byte array
     float nrm2 = 0;
     len = d*d*n;
+    CV_Assert(len == 128); // Divisible by 8
+#if CV_AVX2
+    __m256 __nrm2 = _mm256_setzero_ps();
+    __m256 __dst;
+    for( k = 0; k <= len - 8; k += 8 )
+    {
+        __dst = _mm256_loadu_ps(&dst[k]);
+        __nrm2 = _mm256_add_ps(__nrm2, _mm256_mul_ps(__dst, __dst));
+    }
+    _mm256_store_ps(val_buf, __nrm2);
+    nrm2 = ((val_buf[0] + val_buf[1]) + (val_buf[2] + val_buf[3])) +
+           ((val_buf[4] + val_buf[5]) + (val_buf[6] + val_buf[7]));
+#else
     for( k = 0; k < len; k++ )
         nrm2 += dst[k]*dst[k];
+#endif
+
     float thr = std::sqrt(nrm2)*SIFT_DESCR_MAG_THR;
+
+#if CV_AVX2
+    __nrm2 = _mm256_setzero_ps();
+    __m256 __thr = _mm256_set1_ps(thr);
+    for( k = 0; k <= len - 8; k += 8 )
+    {
+        __dst = _mm256_loadu_ps(&dst[k]);
+        __dst = _mm256_min_ps(__dst, __thr);
+        _mm256_storeu_ps(&dst[k], __dst);
+        __nrm2 = _mm256_add_ps(__nrm2, _mm256_mul_ps(__dst, __dst));
+    }
+    _mm256_store_ps(val_buf, __nrm2);
+    nrm2 = ((val_buf[0] + val_buf[1]) + (val_buf[2] + val_buf[3])) +
+           ((val_buf[4] + val_buf[5]) + (val_buf[6] + val_buf[7]));
+#else
     for( i = 0, nrm2 = 0; i < k; i++ )
     {
         float val = std::min(dst[i], thr);
         dst[i] = val;
         nrm2 += val*val;
     }
+#endif
     nrm2 = SIFT_INT_DESCR_FCTR/std::max(std::sqrt(nrm2), FLT_EPSILON);
 
 #if 1
+#if CV_AVX2
+    __m256 __min = _mm256_setzero_ps();
+    __m256 __max = _mm256_set1_ps(255.0f); // max of uchar
+    __nrm2 = _mm256_set1_ps(nrm2);
+    for( k = 0; k <= len - 8; k+=8 )
+    {
+        __dst = _mm256_loadu_ps(&dst[k]);
+        __dst = _mm256_min_ps(_mm256_max_ps(_mm256_floor_ps(_mm256_mul_ps(__dst, __nrm2)), __min), __max);
+        _mm256_storeu_ps(&dst[k], __dst);
+    }
+#else
     for( k = 0; k < len; k++ )
     {
         dst[k] = saturate_cast<uchar>(dst[k]*nrm2);
     }
+#endif
 #else
     float nrm1 = 0;
     for( k = 0; k < len; k++ )
@@ -913,7 +1021,7 @@ int SIFT_Impl::defaultNorm() const
     return NORM_L2;
 }
 
-#include <ctime>
+//#include <ctime>
 
 void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
                       std::vector<KeyPoint>& keypoints,
@@ -989,7 +1097,7 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
         // filter keypoints by mask
         //KeyPointsFilter::runByPixelsMask( keypoints, mask );
     }
-    clock_t begin = clock();
+    //clock_t begin = clock();
     if( _descriptors.needed() )
     {
         //t = (double)getTickCount();
@@ -1001,7 +1109,7 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
         //t = (double)getTickCount() - t;
         //printf("descriptor extraction time: %g\n", t*1000./tf);
     }
-    printf("calcDesc %f\n", double(clock() - begin) / CLOCKS_PER_SEC);
+    //printf("calcDesc %f\n", double(clock() - begin) / CLOCKS_PER_SEC);
 }
 
 }
