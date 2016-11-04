@@ -399,6 +399,22 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     __m256 __d_6_16 = _mm256_set1_ps(6.f/16.f);
     for( ; i <= n - 8; i+=8 )
     {
+#if CV_FMA3
+        __m256 __hist =
+            _mm256_fmadd_ps(
+                _mm256_add_ps(
+                    _mm256_loadu_ps(&temphist[i-2]),
+                    _mm256_loadu_ps(&temphist[i+2])),
+                __d_1_16,
+                _mm256_fmadd_ps(
+                    _mm256_add_ps(
+                        _mm256_loadu_ps(&temphist[i-1]),
+                        _mm256_loadu_ps(&temphist[i+1])),
+                    __d_4_16,
+                    _mm256_mul_ps(
+                        _mm256_loadu_ps(&temphist[i]),
+                        __d_6_16)));
+#else
         __m256 __hist =
             _mm256_add_ps(
                 _mm256_mul_ps(
@@ -415,6 +431,7 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
                     _mm256_mul_ps(
                         _mm256_loadu_ps(&temphist[i]),
                         __d_6_16)));
+#endif
         _mm256_storeu_ps(&hist[i], __hist);
     }
 #endif
@@ -907,7 +924,11 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
     for( k = 0; k <= len - 8; k += 8 )
     {
         __dst = _mm256_loadu_ps(&dst[k]);
+#if CV_FMA3
+        __nrm2 = _mm256_fmadd_ps(__dst, __dst, __nrm2);
+#else
         __nrm2 = _mm256_add_ps(__nrm2, _mm256_mul_ps(__dst, __dst));
+#endif
     }
     _mm256_store_ps(val_buf, __nrm2);
     nrm2 = ((val_buf[0] + val_buf[1]) + (val_buf[2] + val_buf[3])) +
@@ -927,7 +948,11 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         __dst = _mm256_loadu_ps(&dst[k]);
         __dst = _mm256_min_ps(__dst, __thr);
         _mm256_storeu_ps(&dst[k], __dst);
+#if CV_FMA3
+        __nrm2 = _mm256_fmadd_ps(__dst, __dst, __nrm2);
+#else
         __nrm2 = _mm256_add_ps(__nrm2, _mm256_mul_ps(__dst, __dst));
+#endif
     }
     _mm256_store_ps(val_buf, __nrm2);
     nrm2 = ((val_buf[0] + val_buf[1]) + (val_buf[2] + val_buf[3])) +
