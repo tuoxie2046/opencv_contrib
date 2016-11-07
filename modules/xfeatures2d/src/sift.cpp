@@ -998,27 +998,57 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
 #endif
 }
 
+class calcDescriptorsComputer : public ParallelLoopBody
+{
+public:
+    calcDescriptorsComputer(const std::vector<Mat>& _gpyr,
+                            const std::vector<KeyPoint>& _keypoints,
+                            Mat& _descriptors,
+                            int _nOctaveLayers,
+                            int _firstOctave)
+        : gpyr(_gpyr),
+          keypoints(_keypoints),
+          descriptors(_descriptors),
+          nOctaveLayers(_nOctaveLayers),
+          firstOctave(_firstOctave) { }
+
+    void operator()( const cv::Range& range ) const
+    {
+        const int begin = range.start;
+        const int end = range.end;
+
+        static const int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
+
+        for ( int i = begin; i<end; i++ )
+        {
+            KeyPoint kpt = keypoints[i];
+            int octave, layer;
+            float scale;
+            unpackOctave(kpt, octave, layer, scale);
+            CV_Assert(octave >= firstOctave && layer <= nOctaveLayers+2);
+            float size=kpt.size*scale;
+            Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
+            const Mat& img = gpyr[(octave - firstOctave)*(nOctaveLayers + 3) + layer];
+
+            float angle = 360.f - kpt.angle;
+            if(std::abs(angle - 360.f) < FLT_EPSILON)
+                angle = 0.f;
+            calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, descriptors.ptr<float>((int)i));
+        }
+    }
+
+private:
+    const std::vector<Mat>& gpyr;
+    const std::vector<KeyPoint>& keypoints;
+    Mat& descriptors;
+    int nOctaveLayers;
+    int firstOctave;
+};
+
 static void calcDescriptors(const std::vector<Mat>& gpyr, const std::vector<KeyPoint>& keypoints,
                             Mat& descriptors, int nOctaveLayers, int firstOctave )
 {
-    int d = SIFT_DESCR_WIDTH, n = SIFT_DESCR_HIST_BINS;
-
-    for( size_t i = 0; i < keypoints.size(); i++ )
-    {
-        KeyPoint kpt = keypoints[i];
-        int octave, layer;
-        float scale;
-        unpackOctave(kpt, octave, layer, scale);
-        CV_Assert(octave >= firstOctave && layer <= nOctaveLayers+2);
-        float size=kpt.size*scale;
-        Point2f ptf(kpt.pt.x*scale, kpt.pt.y*scale);
-        const Mat& img = gpyr[(octave - firstOctave)*(nOctaveLayers + 3) + layer];
-
-        float angle = 360.f - kpt.angle;
-        if(std::abs(angle - 360.f) < FLT_EPSILON)
-            angle = 0.f;
-        calcSIFTDescriptor(img, ptf, angle, size*0.5f, d, n, descriptors.ptr<float>((int)i));
-    }
+    parallel_for_(Range(0, keypoints.size()), calcDescriptorsComputer(gpyr, keypoints, descriptors, nOctaveLayers, firstOctave));
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
