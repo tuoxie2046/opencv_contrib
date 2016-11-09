@@ -230,16 +230,17 @@ static Mat createInitialImage( const Mat& img, bool doubleImageSize, float sigma
     if( doubleImageSize )
     {
         sig_diff = sqrtf( std::max(sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA * 4, 0.01f) );
-        Mat dbl;
+        Mat dbl, tmp;
         resize(gray_fpt, dbl, Size(gray.cols*2, gray.rows*2), 0, 0, INTER_LINEAR);
-        GaussianBlur(dbl, dbl, Size(), sig_diff, sig_diff);
-        return dbl;
+        GaussianBlur(dbl, tmp, Size(), sig_diff, sig_diff);
+        return tmp;
     }
     else
     {
+        Mat tmp;
         sig_diff = sqrtf( std::max(sigma * sigma - SIFT_INIT_SIGMA * SIFT_INIT_SIGMA, 0.01f) );
-        GaussianBlur(gray_fpt, gray_fpt, Size(), sig_diff, sig_diff);
-        return gray_fpt;
+        GaussianBlur(gray_fpt, tmp, Size(), sig_diff, sig_diff);
+        return tmp;
     }
 }
 
@@ -283,12 +284,53 @@ void SIFT_Impl::buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, in
     }
 }
 
+class buildDoGPyramidComputer : public ParallelLoopBody
+{
+public:
+    buildDoGPyramidComputer(
+        int _nOctaves,
+        int _nOctaveLayers,
+        const std::vector<Mat>& _gpyr,
+        std::vector<Mat>& _dogpyr)
+        : nOctaves(_nOctaves),
+          nOctaveLayers(_nOctaveLayers),
+          gpyr(_gpyr),
+          dogpyr(_dogpyr) { }
+
+    void operator()( const cv::Range& range ) const
+    {
+        const int begin = range.start;
+        const int end = range.end;
+
+        for( int a = begin; a < end; a++ )
+        {
+            int o = a / (nOctaveLayers + 2);
+            int i = a % (nOctaveLayers + 2);
+
+            const Mat& src1 = gpyr[o*(nOctaveLayers + 3) + i];
+            const Mat& src2 = gpyr[o*(nOctaveLayers + 3) + i + 1];
+            Mat& dst = dogpyr[o*(nOctaveLayers + 2) + i];
+            subtract(src2, src1, dst, noArray(), DataType<sift_wt>::type);
+        }
+    }
+
+private:
+    int nOctaves;
+    int nOctaveLayers;
+    const std::vector<Mat>& gpyr;
+    std::vector<Mat>& dogpyr;
+};
+
 
 void SIFT_Impl::buildDoGPyramid( const std::vector<Mat>& gpyr, std::vector<Mat>& dogpyr ) const
 {
     int nOctaves = (int)gpyr.size()/(nOctaveLayers + 3);
     dogpyr.resize( nOctaves*(nOctaveLayers + 2) );
 
+
+    parallel_for_(Range(0, nOctaves * (nOctaveLayers + 2)), buildDoGPyramidComputer(nOctaves, nOctaveLayers, gpyr, dogpyr));
+
+    /*
     for( int o = 0; o < nOctaves; o++ )
     {
         for( int i = 0; i < nOctaveLayers + 2; i++ )
@@ -298,7 +340,7 @@ void SIFT_Impl::buildDoGPyramid( const std::vector<Mat>& gpyr, std::vector<Mat>&
             Mat& dst = dogpyr[o*(nOctaveLayers + 2) + i];
             subtract(src2, src1, dst, noArray(), DataType<sift_wt>::type);
         }
-    }
+    }*/
 }
 
 
@@ -555,6 +597,144 @@ static bool adjustLocalExtrema( const std::vector<Mat>& dog_pyr, KeyPoint& kpt, 
     return true;
 }
 
+//typedef tbb::enumerable_thread_specific< std::vector<KeyPoint> > KeyPointsTLSType;
+//KeyPointsTLSType KeyPointsTLS;
+
+class findScaleSpaceExtremaComputer : public ParallelLoopBody
+{
+public:
+    findScaleSpaceExtremaComputer(
+        int _o,
+        int _i,
+        int _threshold,
+        int _idx,
+        int _step,
+        int _rows,
+        int _cols,
+        int _nOctaveLayers,
+        double _contrastThreshold,
+        double _edgeThreshold,
+        double _sigma,
+        const std::vector<Mat>& _gauss_pyr,
+        const std::vector<Mat>& _dog_pyr,
+        std::vector<KeyPoint>& _keypoints,
+        Mutex &_mutex)
+
+        : o(_o),
+          i(_i),
+          threshold(_threshold),
+          idx(_idx),
+          step(_step),
+          rows(_rows),
+          cols(_cols),
+          nOctaveLayers(_nOctaveLayers),
+          contrastThreshold(_contrastThreshold),
+          edgeThreshold(_edgeThreshold),
+          sigma(_sigma),
+          gauss_pyr(_gauss_pyr),
+          dog_pyr(_dog_pyr),
+          keypoints(_keypoints),
+          mutex(_mutex) { }
+
+    void operator()( const cv::Range& range ) const
+    {
+        const int begin = range.start;
+        const int end = range.end;
+
+        static const int n = SIFT_ORI_HIST_BINS;
+        float hist[n];
+
+        const Mat& img = dog_pyr[idx];
+        const Mat& prev = dog_pyr[idx-1];
+        const Mat& next = dog_pyr[idx+1];
+
+        //KeyPointsTLSType::reference myTLS = KeyPointsTLS.local();
+        //myTLS.clear();
+
+        for( int r = begin; r < end; r++)
+        {
+            KeyPoint kpt;
+
+            const sift_wt* currptr = img.ptr<sift_wt>(r);
+            const sift_wt* prevptr = prev.ptr<sift_wt>(r);
+            const sift_wt* nextptr = next.ptr<sift_wt>(r);
+
+            for( int c = SIFT_IMG_BORDER; c < cols-SIFT_IMG_BORDER; c++)
+            {
+                sift_wt val = currptr[c];
+
+                // find local extrema with pixel accuracy
+                if( std::abs(val) > threshold &&
+                   ((val > 0 && val >= currptr[c-1] && val >= currptr[c+1] &&
+                     val >= currptr[c-step-1] && val >= currptr[c-step] && val >= currptr[c-step+1] &&
+                     val >= currptr[c+step-1] && val >= currptr[c+step] && val >= currptr[c+step+1] &&
+                     val >= nextptr[c] && val >= nextptr[c-1] && val >= nextptr[c+1] &&
+                     val >= nextptr[c-step-1] && val >= nextptr[c-step] && val >= nextptr[c-step+1] &&
+                     val >= nextptr[c+step-1] && val >= nextptr[c+step] && val >= nextptr[c+step+1] &&
+                     val >= prevptr[c] && val >= prevptr[c-1] && val >= prevptr[c+1] &&
+                     val >= prevptr[c-step-1] && val >= prevptr[c-step] && val >= prevptr[c-step+1] &&
+                     val >= prevptr[c+step-1] && val >= prevptr[c+step] && val >= prevptr[c+step+1]) ||
+                     (val < 0 && val <= currptr[c-1] && val <= currptr[c+1] &&
+                     val <= currptr[c-step-1] && val <= currptr[c-step] && val <= currptr[c-step+1] &&
+                     val <= currptr[c+step-1] && val <= currptr[c+step] && val <= currptr[c+step+1] &&
+                     val <= nextptr[c] && val <= nextptr[c-1] && val <= nextptr[c+1] &&
+                     val <= nextptr[c-step-1] && val <= nextptr[c-step] && val <= nextptr[c-step+1] &&
+                     val <= nextptr[c+step-1] && val <= nextptr[c+step] && val <= nextptr[c+step+1] &&
+                     val <= prevptr[c] && val <= prevptr[c-1] && val <= prevptr[c+1] &&
+                     val <= prevptr[c-step-1] && val <= prevptr[c-step] && val <= prevptr[c-step+1] &&
+                     val <= prevptr[c+step-1] && val <= prevptr[c+step] && val <= prevptr[c+step+1])))
+                {
+                    int r1 = r, c1 = c, layer = i;
+                    if( !adjustLocalExtrema(dog_pyr, kpt, o, layer, r1, c1,
+                                            nOctaveLayers, (float)contrastThreshold,
+                                            (float)edgeThreshold, (float)sigma) )
+                        continue;
+                    float scl_octv = kpt.size*0.5f/(1 << o);
+                    float omax = calcOrientationHist(gauss_pyr[o*(nOctaveLayers+3) + layer],
+                                                     Point(c1, r1),
+                                                     cvRound(SIFT_ORI_RADIUS * scl_octv),
+                                                     SIFT_ORI_SIG_FCTR * scl_octv,
+                                                     hist, n);
+                    float mag_thr = (float)(omax * SIFT_ORI_PEAK_RATIO);
+                    for( int j = 0; j < n; j++ )
+                    {
+                        int l = j > 0 ? j - 1 : n - 1;
+                        int r2 = j < n-1 ? j + 1 : 0;
+
+                        if( hist[j] > hist[l]  &&  hist[j] > hist[r2]  &&  hist[j] >= mag_thr )
+                        {
+                            float bin = j + 0.5f * (hist[l]-hist[r2]) / (hist[l] - 2*hist[j] + hist[r2]);
+                            bin = bin < 0 ? n + bin : bin >= n ? bin - n : bin;
+                            kpt.angle = 360.f - (float)((360.f/n) * bin);
+                           if(std::abs(kpt.angle - 360.f) < FLT_EPSILON)
+                                kpt.angle = 0.f;
+
+                            {
+                                mutex.lock();
+                                keypoints.push_back(kpt);
+                                mutex.unlock();
+                                //myTLS.push_back(kpt);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+private:
+    int o, i;
+    int threshold;
+    int idx, step, rows, cols;
+    int nOctaveLayers;
+    double contrastThreshold;
+    double edgeThreshold;
+    double sigma;
+    const std::vector<Mat>& gauss_pyr;
+    const std::vector<Mat>& dog_pyr;
+    std::vector<KeyPoint>& keypoints;
+    Mutex &mutex;
+};
 
 //
 // Detects features at extrema in DoG scale space.  Bad features are discarded
@@ -563,85 +743,41 @@ void SIFT_Impl::findScaleSpaceExtrema( const std::vector<Mat>& gauss_pyr, const 
                                   std::vector<KeyPoint>& keypoints ) const
 {
     int nOctaves = (int)gauss_pyr.size()/(nOctaveLayers + 3);
-    int threshold = cvFloor(0.5 * contrastThreshold / nOctaveLayers * 255 * SIFT_FIXPT_SCALE);
-    const int n = SIFT_ORI_HIST_BINS;
-    float hist[n];
+    const int threshold = cvFloor(0.5 * contrastThreshold / nOctaveLayers * 255 * SIFT_FIXPT_SCALE);
     KeyPoint kpt;
 
     keypoints.clear();
+
+    /*for (KeyPointsTLSType::iterator i = KeyPointsTLS.begin();
+          i != KeyPointsTLS.end(); ++i)
+    {
+        i->clear();
+    }*/
+
+    Mutex mutex;
 
     for( int o = 0; o < nOctaves; o++ )
         for( int i = 1; i <= nOctaveLayers; i++ )
         {
             int idx = o*(nOctaveLayers+2)+i;
             const Mat& img = dog_pyr[idx];
-            const Mat& prev = dog_pyr[idx-1];
-            const Mat& next = dog_pyr[idx+1];
             int step = (int)img.step1();
             int rows = img.rows, cols = img.cols;
 
-            for( int r = SIFT_IMG_BORDER; r < rows-SIFT_IMG_BORDER; r++)
-            {
-                const sift_wt* currptr = img.ptr<sift_wt>(r);
-                const sift_wt* prevptr = prev.ptr<sift_wt>(r);
-                const sift_wt* nextptr = next.ptr<sift_wt>(r);
-
-                for( int c = SIFT_IMG_BORDER; c < cols-SIFT_IMG_BORDER; c++)
-                {
-                    sift_wt val = currptr[c];
-
-                    // find local extrema with pixel accuracy
-                    if( std::abs(val) > threshold &&
-                       ((val > 0 && val >= currptr[c-1] && val >= currptr[c+1] &&
-                         val >= currptr[c-step-1] && val >= currptr[c-step] && val >= currptr[c-step+1] &&
-                         val >= currptr[c+step-1] && val >= currptr[c+step] && val >= currptr[c+step+1] &&
-                         val >= nextptr[c] && val >= nextptr[c-1] && val >= nextptr[c+1] &&
-                         val >= nextptr[c-step-1] && val >= nextptr[c-step] && val >= nextptr[c-step+1] &&
-                         val >= nextptr[c+step-1] && val >= nextptr[c+step] && val >= nextptr[c+step+1] &&
-                         val >= prevptr[c] && val >= prevptr[c-1] && val >= prevptr[c+1] &&
-                         val >= prevptr[c-step-1] && val >= prevptr[c-step] && val >= prevptr[c-step+1] &&
-                         val >= prevptr[c+step-1] && val >= prevptr[c+step] && val >= prevptr[c+step+1]) ||
-                        (val < 0 && val <= currptr[c-1] && val <= currptr[c+1] &&
-                         val <= currptr[c-step-1] && val <= currptr[c-step] && val <= currptr[c-step+1] &&
-                         val <= currptr[c+step-1] && val <= currptr[c+step] && val <= currptr[c+step+1] &&
-                         val <= nextptr[c] && val <= nextptr[c-1] && val <= nextptr[c+1] &&
-                         val <= nextptr[c-step-1] && val <= nextptr[c-step] && val <= nextptr[c-step+1] &&
-                         val <= nextptr[c+step-1] && val <= nextptr[c+step] && val <= nextptr[c+step+1] &&
-                         val <= prevptr[c] && val <= prevptr[c-1] && val <= prevptr[c+1] &&
-                         val <= prevptr[c-step-1] && val <= prevptr[c-step] && val <= prevptr[c-step+1] &&
-                         val <= prevptr[c+step-1] && val <= prevptr[c+step] && val <= prevptr[c+step+1])))
-                    {
-                        int r1 = r, c1 = c, layer = i;
-                        if( !adjustLocalExtrema(dog_pyr, kpt, o, layer, r1, c1,
-                                                nOctaveLayers, (float)contrastThreshold,
-                                                (float)edgeThreshold, (float)sigma) )
-                            continue;
-                        float scl_octv = kpt.size*0.5f/(1 << o);
-                        float omax = calcOrientationHist(gauss_pyr[o*(nOctaveLayers+3) + layer],
-                                                         Point(c1, r1),
-                                                         cvRound(SIFT_ORI_RADIUS * scl_octv),
-                                                         SIFT_ORI_SIG_FCTR * scl_octv,
-                                                         hist, n);
-                        float mag_thr = (float)(omax * SIFT_ORI_PEAK_RATIO);
-                        for( int j = 0; j < n; j++ )
-                        {
-                            int l = j > 0 ? j - 1 : n - 1;
-                            int r2 = j < n-1 ? j + 1 : 0;
-
-                            if( hist[j] > hist[l]  &&  hist[j] > hist[r2]  &&  hist[j] >= mag_thr )
-                            {
-                                float bin = j + 0.5f * (hist[l]-hist[r2]) / (hist[l] - 2*hist[j] + hist[r2]);
-                                bin = bin < 0 ? n + bin : bin >= n ? bin - n : bin;
-                                kpt.angle = 360.f - (float)((360.f/n) * bin);
-                                if(std::abs(kpt.angle - 360.f) < FLT_EPSILON)
-                                    kpt.angle = 0.f;
-                                keypoints.push_back(kpt);
-                            }
-                        }
-                    }
-                }
-            }
+            parallel_for_(Range(SIFT_IMG_BORDER, rows-SIFT_IMG_BORDER),
+                    findScaleSpaceExtremaComputer(o, i, threshold, idx, step, rows, cols,
+                        nOctaveLayers,
+                        contrastThreshold,
+                        edgeThreshold,
+                        sigma,
+                        gauss_pyr, dog_pyr, keypoints, mutex));
         }
+
+    /*for (KeyPointsTLSType::const_iterator i = KeyPointsTLS.begin();
+          i != KeyPointsTLS.end(); ++i)
+     {
+        keypoints.insert(keypoints.end(), i->begin(), i->end());
+    }*/
 }
 
 
@@ -1075,8 +1211,6 @@ int SIFT_Impl::defaultNorm() const
     return NORM_L2;
 }
 
-//#include <ctime>
-
 void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
                       std::vector<KeyPoint>& keypoints,
                       OutputArray _descriptors,
@@ -1117,6 +1251,9 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
     //double t, tf = getTickFrequency();
     //t = (double)getTickCount();
     buildGaussianPyramid(base, gpyr, nOctaves);
+    //t = (double)getTickCount() - t;
+    //printf("pyramid construction time: %g\n", t*1000./tf);
+    //t = (double)getTickCount();
     buildDoGPyramid(gpyr, dogpyr);
 
     //t = (double)getTickCount() - t;
