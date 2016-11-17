@@ -140,8 +140,7 @@ public:
                     OutputArray descriptors,
                     bool useProvidedKeypoints = false);
 
-    void buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, int nOctaves ) const;
-    void buildDoGPyramid( const std::vector<Mat>& pyr, std::vector<Mat>& dogpyr ) const;
+    void buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, std::vector<Mat>& dogpyr, int nOctaves ) const;
     void findScaleSpaceExtrema( const std::vector<Mat>& gauss_pyr, const std::vector<Mat>& dog_pyr,
                                std::vector<KeyPoint>& keypoints ) const;
 
@@ -244,11 +243,64 @@ static Mat createInitialImage( const Mat& img, bool doubleImageSize, float sigma
     }
 }
 
+class buildDoGPyramidComputer// : public ParallelLoopBody
+{
+public:
+    buildDoGPyramidComputer(
+        const float *_pSrc1,
+        const float *_pSrc2, 
+        float *_pDst,
+        int _src1Step,
+        int _src2Step,
+        int _dstStep,
+        int _width)
+        : pSrc1(_pSrc1),
+          pSrc2(_pSrc2),
+          pDst(_pDst),
+          src1Step(_src1Step),
+          src2Step(_src2Step),
+          dstStep(_dstStep),
+          width(_width) { }
 
-void SIFT_Impl::buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, int nOctaves ) const
+    void operator()( const tbb::blocked_range<int> &range ) const
+    {
+        const int begin = range.begin();
+        const int end = range.end();
+
+        for( int y = begin; y < end; ++y )
+        {
+            const float *pSrc1Row = pSrc1 + y * src1Step;
+            const float *pSrc2Row = pSrc2 + y * src2Step;
+            float *pDstRow = pDst + y * dstStep;
+
+            int x = 0;
+#if CV_AVX2
+            for ( ; x <= width - 8; x += 8) {
+                __m256 __src1 = _mm256_loadu_ps(&pSrc1Row[x]);
+                __m256 __src2 = _mm256_loadu_ps(&pSrc2Row[x]);
+                _mm256_storeu_ps(&pDstRow[x], _mm256_sub_ps(__src1, __src2));
+            }
+#endif
+            for ( ; x < width; ++x) {
+                pDstRow[x] = pSrc1Row[x] - pSrc2Row[x];
+            }
+        }
+    }
+
+private:
+    const float *pSrc1;
+    const float *pSrc2;
+    float *pDst;
+    int src1Step, src2Step, dstStep;
+    int width;
+};
+
+
+void SIFT_Impl::buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, std::vector<Mat>& dogpyr, int nOctaves ) const
 {
     std::vector<double> sig(nOctaveLayers + 3);
     pyr.resize(nOctaves*(nOctaveLayers + 3));
+    dogpyr.resize(nOctaves*(nOctaveLayers + 2));
 
     // precompute Gaussian sigmas using the following formula:
     //  \sigma_{total}^2 = \sigma_{i}^2 + \sigma_{i-1}^2
@@ -279,70 +331,19 @@ void SIFT_Impl::buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, in
             {
                 const Mat& src = pyr[o*(nOctaveLayers + 3) + i-1];
                 GaussianBlur(src, dst, Size(), sig[i], sig[i]);
+                Mat& dogDst = dogpyr[o*(nOctaveLayers + 2) + i - 1];
+
+                dogDst.create(src.size(), src.type());
+                tbb::parallel_for(BlockedRange(0, src.rows), 
+                    buildDoGPyramidComputer(
+                        reinterpret_cast<const float*>(src.ptr()), 
+                        reinterpret_cast<const float*>(dst.ptr()),
+                        reinterpret_cast<float*>(dogDst.ptr()),
+                        src.step1(), dst.step1(), dogDst.step1(), src.cols));
             }
         }
     }
 }
-
-class buildDoGPyramidComputer : public ParallelLoopBody
-{
-public:
-    buildDoGPyramidComputer(
-        int _nOctaves,
-        int _nOctaveLayers,
-        const std::vector<Mat>& _gpyr,
-        std::vector<Mat>& _dogpyr)
-        : nOctaves(_nOctaves),
-          nOctaveLayers(_nOctaveLayers),
-          gpyr(_gpyr),
-          dogpyr(_dogpyr) { }
-
-    void operator()( const cv::Range& range ) const
-    {
-        const int begin = range.start;
-        const int end = range.end;
-
-        for( int a = begin; a < end; a++ )
-        {
-            int o = a / (nOctaveLayers + 2);
-            int i = a % (nOctaveLayers + 2);
-
-            const Mat& src1 = gpyr[o*(nOctaveLayers + 3) + i];
-            const Mat& src2 = gpyr[o*(nOctaveLayers + 3) + i + 1];
-            Mat& dst = dogpyr[o*(nOctaveLayers + 2) + i];
-            subtract(src2, src1, dst, noArray(), DataType<sift_wt>::type);
-        }
-    }
-
-private:
-    int nOctaves;
-    int nOctaveLayers;
-    const std::vector<Mat>& gpyr;
-    std::vector<Mat>& dogpyr;
-};
-
-
-void SIFT_Impl::buildDoGPyramid( const std::vector<Mat>& gpyr, std::vector<Mat>& dogpyr ) const
-{
-    int nOctaves = (int)gpyr.size()/(nOctaveLayers + 3);
-    dogpyr.resize( nOctaves*(nOctaveLayers + 2) );
-
-
-    parallel_for_(Range(0, nOctaves * (nOctaveLayers + 2)), buildDoGPyramidComputer(nOctaves, nOctaveLayers, gpyr, dogpyr));
-
-    /*
-    for( int o = 0; o < nOctaves; o++ )
-    {
-        for( int i = 0; i < nOctaveLayers + 2; i++ )
-        {
-            const Mat& src1 = gpyr[o*(nOctaveLayers + 3) + i];
-            const Mat& src2 = gpyr[o*(nOctaveLayers + 3) + i + 1];
-            Mat& dst = dogpyr[o*(nOctaveLayers + 2) + i];
-            subtract(src2, src1, dst, noArray(), DataType<sift_wt>::type);
-        }
-    }*/
-}
-
 
 // Computes a gradient orientation histogram at a specified pixel
 static float calcOrientationHist( const Mat& img, Point pt, int radius,
@@ -1248,27 +1249,22 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
     std::vector<Mat> gpyr, dogpyr;
     int nOctaves = actualNOctaves > 0 ? actualNOctaves : cvRound(std::log( (double)std::min( base.cols, base.rows ) ) / std::log(2.) - 2) - firstOctave;
 
-    //double t, tf = getTickFrequency();
-    //t = (double)getTickCount();
-    buildGaussianPyramid(base, gpyr, nOctaves);
-    //t = (double)getTickCount() - t;
-    //printf("pyramid construction time: %g\n", t*1000./tf);
-    //t = (double)getTickCount();
-    buildDoGPyramid(gpyr, dogpyr);
-
-    //t = (double)getTickCount() - t;
-    //printf("pyramid construction time: %g\n", t*1000./tf);
+    double t, tf = getTickFrequency();
+    t = (double)getTickCount();
+    buildGaussianPyramid(base, gpyr, dogpyr, nOctaves);
+    t = (double)getTickCount() - t;
+    printf("pyramid construction time: %g\n", t*1000./tf);
 
     if( !useProvidedKeypoints )
     {
-        //t = (double)getTickCount();
+        t = (double)getTickCount();
         findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
         KeyPointsFilter::removeDuplicated( keypoints );
 
         if( nfeatures > 0 )
             KeyPointsFilter::retainBest(keypoints, nfeatures);
-        //t = (double)getTickCount() - t;
-        //printf("keypoint detection time: %g\n", t*1000./tf);
+        t = (double)getTickCount() - t;
+        printf("keypoint detection time: %g\n", t*1000./tf);
 
         if( firstOctave < 0 )
             for( size_t i = 0; i < keypoints.size(); i++ )
@@ -1291,14 +1287,14 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
     //clock_t begin = clock();
     if( _descriptors.needed() )
     {
-        //t = (double)getTickCount();
+        t = (double)getTickCount();
         int dsize = descriptorSize();
         _descriptors.create((int)keypoints.size(), dsize, CV_32F);
         Mat descriptors = _descriptors.getMat();
 
         calcDescriptors(gpyr, keypoints, descriptors, nOctaveLayers, firstOctave);
-        //t = (double)getTickCount() - t;
-        //printf("descriptor extraction time: %g\n", t*1000./tf);
+        t = (double)getTickCount() - t;
+        printf("descriptor extraction time: %g\n", t*1000./tf);
     }
     //printf("calcDesc %f\n", double(clock() - begin) / CLOCKS_PER_SEC);
 }
