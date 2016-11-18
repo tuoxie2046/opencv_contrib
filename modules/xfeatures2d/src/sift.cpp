@@ -1249,22 +1249,22 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
     std::vector<Mat> gpyr, dogpyr;
     int nOctaves = actualNOctaves > 0 ? actualNOctaves : cvRound(std::log( (double)std::min( base.cols, base.rows ) ) / std::log(2.) - 2) - firstOctave;
 
-    double t, tf = getTickFrequency();
-    t = (double)getTickCount();
+    //double t, tf = getTickFrequency();
+    //t = (double)getTickCount();
     buildGaussianPyramid(base, gpyr, dogpyr, nOctaves);
-    t = (double)getTickCount() - t;
-    printf("pyramid construction time: %g\n", t*1000./tf);
+    //t = (double)getTickCount() - t;
+    //printf("pyramid construction time: %g\n", t*1000./tf);
 
     if( !useProvidedKeypoints )
     {
-        t = (double)getTickCount();
+        //t = (double)getTickCount();
         findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
         KeyPointsFilter::removeDuplicated( keypoints );
 
         if( nfeatures > 0 )
             KeyPointsFilter::retainBest(keypoints, nfeatures);
-        t = (double)getTickCount() - t;
-        printf("keypoint detection time: %g\n", t*1000./tf);
+        //t = (double)getTickCount() - t;
+        //printf("keypoint detection time: %g\n", t*1000./tf);
 
         if( firstOctave < 0 )
             for( size_t i = 0; i < keypoints.size(); i++ )
@@ -1287,14 +1287,14 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
     //clock_t begin = clock();
     if( _descriptors.needed() )
     {
-        t = (double)getTickCount();
+        //t = (double)getTickCount();
         int dsize = descriptorSize();
         _descriptors.create((int)keypoints.size(), dsize, CV_32F);
         Mat descriptors = _descriptors.getMat();
 
         calcDescriptors(gpyr, keypoints, descriptors, nOctaveLayers, firstOctave);
-        t = (double)getTickCount() - t;
-        printf("descriptor extraction time: %g\n", t*1000./tf);
+        //t = (double)getTickCount() - t;
+        //printf("descriptor extraction time: %g\n", t*1000./tf);
     }
     //printf("calcDesc %f\n", double(clock() - begin) / CLOCKS_PER_SEC);
 }
