@@ -122,7 +122,7 @@ class SIFT_Impl : public SIFT
 public:
     explicit SIFT_Impl( int nfeatures = 0, int nOctaveLayers = 3,
                           double contrastThreshold = 0.04, double edgeThreshold = 10,
-                          double sigma = 1.6);
+                          double sigma = 1.6, bool useNegativeOctave = true );
 
     //! returns the descriptor size in floats (128)
     int descriptorSize() const;
@@ -151,6 +151,7 @@ protected:
     CV_PROP_RW double contrastThreshold;
     CV_PROP_RW double edgeThreshold;
     CV_PROP_RW double sigma;
+    CV_PROP_RW bool useNegativeOctave;
 };
 
 Ptr<SIFT> SIFT::create( int _nfeatures, int _nOctaveLayers,
@@ -1190,9 +1191,10 @@ static void calcDescriptors(const std::vector<Mat>& gpyr, const std::vector<KeyP
 //////////////////////////////////////////////////////////////////////////////////////////
 
 SIFT_Impl::SIFT_Impl( int _nfeatures, int _nOctaveLayers,
-           double _contrastThreshold, double _edgeThreshold, double _sigma )
+           double _contrastThreshold, double _edgeThreshold, double _sigma, bool _useNegativeOctave )
     : nfeatures(_nfeatures), nOctaveLayers(_nOctaveLayers),
-    contrastThreshold(_contrastThreshold), edgeThreshold(_edgeThreshold), sigma(_sigma)
+      contrastThreshold(_contrastThreshold), edgeThreshold(_edgeThreshold),
+      sigma(_sigma), useNegativeOctave(_useNegativeOctave)
 {
 }
 
@@ -1216,7 +1218,8 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
                       OutputArray _descriptors,
                       bool useProvidedKeypoints)
 {
-    int firstOctave = -1, actualNOctaves = 0, actualNLayers = 0;
+    int firstOctave = useNegativeOctave ? -1 : 0;
+    int actualNOctaves = 0, actualNLayers = 0;
     Mat image = _image.getMat(), mask = _mask.getMat();
 
     if( image.empty() || image.depth() != CV_8U )
