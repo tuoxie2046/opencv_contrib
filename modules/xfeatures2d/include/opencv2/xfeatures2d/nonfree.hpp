@@ -78,7 +78,7 @@ public:
      */
     CV_WRAP static Ptr<SIFT> create( int nfeatures = 0, int nOctaveLayers = 3,
                                     double contrastThreshold = 0.04, double edgeThreshold = 10,
-                                    double sigma = 1.6);
+                                    double sigma = 1.6, bool useNegativeOctave = true);
 };
 
 typedef SIFT SiftFeatureDetector;

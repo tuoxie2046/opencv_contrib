@@ -155,9 +155,10 @@ protected:
 };
 
 Ptr<SIFT> SIFT::create( int _nfeatures, int _nOctaveLayers,
-                     double _contrastThreshold, double _edgeThreshold, double _sigma )
+                        double _contrastThreshold, double _edgeThreshold, double _sigma,
+                        bool _useNegativeOctave)
 {
-    return makePtr<SIFT_Impl>(_nfeatures, _nOctaveLayers, _contrastThreshold, _edgeThreshold, _sigma);
+    return makePtr<SIFT_Impl>(_nfeatures, _nOctaveLayers, _contrastThreshold, _edgeThreshold, _sigma, _useNegativeOctave);
 }
 
 /******************************* Defs and macros *****************************/
