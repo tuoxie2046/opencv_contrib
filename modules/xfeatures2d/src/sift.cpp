@@ -1269,14 +1269,6 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
         findScaleSpaceExtrema(gpyr, dogpyr, keypoints);
         KeyPointsFilter::removeDuplicated( keypoints );
 
-        if( !mask.empty() )
-            KeyPointsFilter::runByPixelsMask( keypoints, mask );
-
-        if( nfeatures > 0 )
-            KeyPointsFilter::retainBest(keypoints, nfeatures);
-        //t = (double)getTickCount() - t;
-        //printf("keypoint detection time: %g\n", t*1000./tf);
-
         if( firstOctave < 0 )
             for( size_t i = 0; i < keypoints.size(); i++ )
             {
@@ -1286,6 +1278,15 @@ void SIFT_Impl::detectAndCompute(InputArray _image, InputArray _mask,
                 kpt.pt *= scale;
                 kpt.size *= scale;
             }
+
+        if( !mask.empty() )
+            KeyPointsFilter::runByPixelsMask( keypoints, mask );
+
+        if( nfeatures > 0 )
+            KeyPointsFilter::retainBest(keypoints, nfeatures);
+
+        //t = (double)getTickCount() - t;
+        //printf("keypoint detection time: %g\n", t*1000./tf);
     }
     else
     {
