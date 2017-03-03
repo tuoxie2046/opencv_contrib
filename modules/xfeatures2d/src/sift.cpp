@@ -1112,7 +1112,7 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
     for( k = 0; k <= len - 8; k+=8 )
     {
         __dst = _mm256_loadu_ps(&dst[k]);
-        __dst = _mm256_min_ps(_mm256_max_ps(_mm256_floor_ps(_mm256_mul_ps(__dst, __nrm2)), __min), __max);
+        __dst = _mm256_min_ps(_mm256_max_ps(_mm256_round_ps(_mm256_mul_ps(__dst, __nrm2), _MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC), __min), __max);
         _mm256_storeu_ps(&dst[k], __dst);
     }
 #else
