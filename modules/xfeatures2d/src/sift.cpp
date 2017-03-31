@@ -395,14 +395,8 @@ static float calcOrientationHist( const Mat& img, Point pt, int radius,
     {
         __m256i __bin = _mm256_cvtps_epi32(_mm256_round_ps(_mm256_mul_ps(__nd360, _mm256_loadu_ps(&Ori[k])), _MM_FROUND_TO_NEAREST_INT |_MM_FROUND_NO_EXC));
 
-        __bin = _mm256_sub_epi32(__bin, _mm256_and_si256(
-            __n,
-            _mm256_or_si256(
-                _mm256_cmpeq_epi32(__bin, __n),
-                _mm256_cmpgt_epi32(__bin, __n))));
-        __bin = _mm256_add_epi32(__bin, _mm256_and_si256(
-            __n,
-            _mm256_cmpgt_epi32(_mm256_setzero_si256(), __bin)));
+        __bin = _mm256_sub_epi32(__bin, _mm256_andnot_si256(_mm256_cmpgt_epi32(__n, __bin), __n));
+        __bin = _mm256_add_epi32(__bin, _mm256_and_si256(__n, _mm256_cmpgt_epi32(_mm256_setzero_si256(), __bin)));
 
         __m256 __w_mul_mag = _mm256_mul_ps(_mm256_loadu_ps(&W[k]), _mm256_loadu_ps(&Mag[k]));
 
@@ -857,15 +851,8 @@ static void calcSIFTDescriptor( const Mat& img, Point2f ptf, float ori, float sc
         __obin = _mm256_sub_ps(__obin, __o0);
 
         __m256i __o0i = _mm256_cvtps_epi32(__o0);
-        // _o0 += (o0 < 0) * n
-        __o0i = _mm256_add_epi32(__o0i, _mm256_and_si256(
-            __n,
-            _mm256_cmpgt_epi32(_mm256_setzero_si256(), __o0i)));
-        __o0i = _mm256_sub_epi32(__o0i, _mm256_and_si256(
-            __n, 
-            _mm256_or_si256(
-                _mm256_cmpeq_epi32(__o0i, __n),
-                _mm256_cmpgt_epi32(__o0i, __n))));
+        __o0i = _mm256_add_epi32(__o0i, _mm256_and_si256(__n, _mm256_cmpgt_epi32(_mm256_setzero_si256(), __o0i)));
+        __o0i = _mm256_sub_epi32(__o0i, _mm256_andnot_si256(_mm256_cmpgt_epi32(__n, __o0i), __n));
 
         __m256 __v_r1 = _mm256_mul_ps(__mag, __rbin);
         __m256 __v_r0 = _mm256_sub_ps(__mag, __v_r1);
